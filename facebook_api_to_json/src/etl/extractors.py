@@ -32,9 +32,9 @@ class FacebookAdsExtractor:
     
     def _init_api(self) -> FacebookAdsApi:
         """Initialize Facebook API connection."""
-        app_id = os.getenv('FB_APP_ID')
-        app_secret = os.getenv('FB_APP_SECRET')
-        access_token = os.getenv('FB_ACCESS_TOKEN')
+        app_id = os.getenv('FACEBOOK_APP_ID')
+        app_secret = os.getenv('FACEBOOK_APP_SECRET')
+        access_token = os.getenv('FACEBOOK_ACCESS_TOKEN')
         
         if not all([app_id, app_secret, access_token]):
             raise ValueError("Missing required Facebook API credentials in .env file")
@@ -44,9 +44,9 @@ class FacebookAdsExtractor:
     
     def _get_ad_account(self) -> AdAccount:
         """Get Facebook Ad Account."""
-        ad_account_id = os.getenv('FB_AD_ACCOUNT_ID')
+        ad_account_id = os.getenv('FACEBOOK_AD_ACCOUNT_ID')
         if not ad_account_id:
-            raise ValueError("Missing FB_AD_ACCOUNT_ID in .env file")
+            raise ValueError("Missing FACEBOOK_AD_ACCOUNT_ID in .env file")
         
         print(f"Using Ad Account ID: {ad_account_id}")
         return AdAccount(ad_account_id)
@@ -254,6 +254,7 @@ class FacebookAdsExtractor:
             print("Starting ads data extraction...")
             ads_data = []
             performance_data = []
+            creative_data = []  # New list for creative data
             status_info = {
                 'status': 'IN_PROGRESS',
                 'total_ads': 0,
@@ -288,43 +289,35 @@ class FacebookAdsExtractor:
                     'since': start_date.strftime('%Y-%m-%d'),
                     'until': end_date.strftime('%Y-%m-%d')
                 }
-                print(f"Using date range: {time_range_param}")
-            else:
-                print("No date range specified, using default")
 
             params = {
                 'level': 'ad',
                 'fields': [
                     'ad_id',
                     'ad_name',
-                    'campaign_id',
-                    'campaign_name',
                     'adset_id',
                     'adset_name',
+                    'campaign_id',
+                    'campaign_name',
                     'impressions',
                     'clicks',
                     'spend',
-                    'reach',
-                    'frequency',
-                    'ctr',
-                    'cpc',
-                    'cpm',
                     'actions',
                     'action_values',
-                    'conversions',
-                    'conversion_values',
-                    'cost_per_conversion',
-                    'conversion_rate_ranking',
                     'date_start',
                     'date_stop'
                 ],
-                'time_range': time_range_param,
-                'action_attribution_windows': ['28d_click', '1d_view', '7d_click', '7d_view'],
-                'action_breakdowns': ['action_type', 'action_target_id', 'action_destination'],
-                'action_report_time': 'conversion'
+                'action_attribution_windows': ['1d_click'],
+                'filtering': [{
+                    'field': 'action_type',
+                    'operator': 'IN',
+                    'value': ['offsite_conversion.fb_pixel_custom']
+                }]
             }
 
-            print(f"Using insights params: {json.dumps(params, indent=2)}")
+            if time_range_param:
+                params['time_range'] = time_range_param
+                print(f"Using date range: {time_range_param}")
 
             # Get insights for each ad
             for basic_ad in basic_ads:
@@ -334,100 +327,67 @@ class FacebookAdsExtractor:
                     
                     # Get ad insights
                     ad = Ad(ad_id)
-                    insights = ad.get_insights(
-                        params=params
-                    )
+                    insights = ad.get_insights(params=params)
                     
                     if not insights:
                         print(f"No insights found for ad {ad_id}")
                         continue
                     
+                    # Get creative details
+                    creative_id = basic_ad.get('creative', {}).get('id')
+                    if creative_id:
+                        try:
+                            creative = AdCreative(creative_id)
+                            creative_details = creative.api_get(
+                                fields=[
+                                    'id',
+                                    'title',
+                                    'body',
+                                    'image_url',
+                                    'thumbnail_url',
+                                    'object_story_spec',
+                                    'call_to_action_type',
+                                    'link_url'
+                                ]
+                            ).export_all_data()
+                            creative_details['ad_id'] = ad_id  # Link creative to ad
+                            creative_data.append(creative_details)
+                            print(f"Got creative data for ad {ad_id}")
+                        except Exception as e:
+                            print(f"Error getting creative details for {creative_id}: {str(e)}")
+                    
                     # Process insights
                     for insight in insights:
                         metrics = insight.export_all_data()
-                        print(f"Raw metrics for ad {ad_id}: {json.dumps(metrics, indent=2)}")
                         
-                        # Extract conversion data
-                        conversions = []
-                        actions = metrics.get('actions', [])
-                        print(f"Actions data for ad {ad_id}: {json.dumps(actions, indent=2)}")
-                        
-                        for action in actions:
-                            # Log all action types we find
-                            action_type = action.get('action_type')
-                            if action_type:
-                                print(f"Found action type: {action_type}")
-                            
-                            # Check for both standard and custom conversions
-                            if action_type in ['offsite_conversion.fb_pixel_custom', 'offsite_conversion.custom.1']:
-                                print(f"Found conversion in ad {ad_id}: {json.dumps(action, indent=2)}")
-                                conversions.append({
-                                    'value': action.get('value', 0),
-                                    'action_type': action_type,
-                                    'event_name': action.get('action_device', 'unknown')
-                                })
-                        
-                        # Get creative details
-                        creative_details = {}
-                        creative_id = basic_ad.get('creative', {}).get('id')
-                        
-                        if creative_id:
-                            try:
-                                creative = AdCreative(creative_id)
-                                creative_details = creative.api_get(
-                                    fields=[
-                                        'id',
-                                        'name',
-                                        'title',
-                                        'body',
-                                        'image_url',
-                                        'thumbnail_url',
-                                        'object_story_spec',
-                                        'url_tags',
-                                        'link_url',
-                                        'object_type',
-                                        'template_url'
-                                    ]
-                                ).export_all_data()
-                            except Exception as e:
-                                print(f"Error getting creative details for {creative_id}: {str(e)}")
-                                creative_details = {}
-                        
-                        # Prepare ad data
-                        ad_data = {
-                            'id': ad_id,
-                            'name': basic_ad.get('name'),
-                            'status': basic_ad.get('status'),
-                            'campaign_id': basic_ad.get('campaign_id'),
-                            'adset_id': basic_ad.get('adset_id'),
-                            'created_time': basic_ad.get('created_time'),
-                            'updated_time': basic_ad.get('updated_time'),
-                            'effective_status': basic_ad.get('effective_status'),
-                            'creative': creative_details
-                        }
-                        
-                        # Prepare performance data
+                        # Format the data to match offsite_conversions.json structure
                         performance_metric = {
                             'ad_id': ad_id,
-                            'timestamp': metrics.get('date_start', datetime.now().isoformat()),
-                            'impressions': int(metrics.get('impressions', 0)),
-                            'clicks': int(metrics.get('clicks', 0)),
-                            'spend': float(metrics.get('spend', 0)),
-                            'reach': int(metrics.get('reach', 0)),
-                            'frequency': float(metrics.get('frequency', 0)),
-                            'ctr': float(metrics.get('ctr', 0)),
-                            'cpc': float(metrics.get('cpc', 0)),
-                            'cpm': float(metrics.get('cpm', 0)),
-                            'conversions': len(conversions),
-                            'conversion_value': float(sum(float(conv.get('value', 0)) for conv in conversions)),
-                            'conversion_data': conversions,
-                            'actions': actions  # Store the raw actions data
+                            'ad_name': metrics.get('ad_name'),
+                            'adset_id': metrics.get('adset_id'),
+                            'adset_name': metrics.get('adset_name'),
+                            'campaign_id': metrics.get('campaign_id'),
+                            'campaign_name': metrics.get('campaign_name'),
+                            'impressions': str(metrics.get('impressions', '0')),
+                            'clicks': str(metrics.get('clicks', '0')),
+                            'spend': str(metrics.get('spend', '0')),
+                            'actions': [
+                                action for action in metrics.get('actions', [])
+                                if action.get('action_type') == 'offsite_conversion.fb_pixel_custom'
+                            ],
+                            'action_values': [
+                                action for action in metrics.get('action_values', [])
+                                if action.get('action_type') == 'offsite_conversion.fb_pixel_custom'
+                            ],
+                            'date_start': metrics.get('date_start'),
+                            'date_stop': metrics.get('date_stop')
                         }
                         
-                        print(f"Successfully processed ad {ad_id}: {ad_data['name']}")
-                        print(f"Performance metrics: {json.dumps(performance_metric, indent=2)}")
+                        print(f"Successfully processed ad {ad_id}: {performance_metric['ad_name']}")
                         
-                        ads_data.append(ad_data)
+                        # Store the basic ad data
+                        ads_data.append(basic_ad)
+                        # Store the performance metrics in the format matching offsite_conversions.json
                         performance_data.append(performance_metric)
                         status_info['processed_ads'] += 1
                         
@@ -436,6 +396,13 @@ class FacebookAdsExtractor:
                     print(error_msg)
                     status_info['errors'].append(error_msg)
                     continue
+
+            # Save creative data to a separate file
+            if creative_data:
+                os.makedirs('output', exist_ok=True)
+                with open('output/ad_creatives.json', 'w') as f:
+                    json.dump(creative_data, f, indent=2)
+                print(f"Saved {len(creative_data)} creative records to output/ad_creatives.json")
 
             status_info['status'] = 'COMPLETED'
             status_info['response'] = f"Successfully processed {status_info['processed_ads']} of {status_info['total_ads']} ads"

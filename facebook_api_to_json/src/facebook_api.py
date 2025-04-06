@@ -1,13 +1,21 @@
 from facebook_business.adobjects.adaccount import AdAccount
 from facebook_business.adobjects.ad import Ad
 from facebook_business.api import FacebookAdsApi
-from typing import List, Dict
+from typing import List, Dict, Optional
 import json
+import logging
+import os
 
-class FacebookAdsAPI:
-    def __init__(self, access_token: str, ad_account_id: str):
-        self.ad_account_id = ad_account_id
-        FacebookAdsApi.init(access_token=access_token)
+from .utils.date_utils import get_date_range, date_range_iterator, format_date
+
+logger = logging.getLogger(__name__)
+
+class FacebookAPI:
+    def __init__(self, access_token: str, ad_account_id: str, api_version: str = 'v19.0'):
+        """Initialize Facebook API client."""
+        self.ad_account_id = ad_account_id if ad_account_id.startswith('act_') else f'act_{ad_account_id}'
+        FacebookAdsApi.init(access_token=access_token, api_version=api_version)
+        self.account = AdAccount(self.ad_account_id)
     
     def get_ads(self) -> List[Dict]:
         """Fetch ads with detailed information including budget, performance metrics, and targeting."""
@@ -205,4 +213,108 @@ class FacebookAdsAPI:
             
         except Exception as e:
             print(f"Error fetching ads: {str(e)}")
-            return [] 
+            return []
+
+    def fetch_offsite_conversions(
+        self,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        days_back: int = 30,
+        increment_days: int = 1,
+        output_file: str = 'data/output/offsite_conversions.json'
+    ) -> List[Dict]:
+        """
+        Fetch offsite conversion data within date range, day by day.
+        
+        Args:
+            start_date: Optional start date (YYYY-MM-DD)
+            end_date: Optional end date (YYYY-MM-DD)
+            days_back: Days to look back if no start_date
+            increment_days: Days per fetch (default: 1 for daily)
+            output_file: Path to save JSON output
+        """
+        start_dt, end_dt = get_date_range(start_date, end_date, days_back)
+        logger.info(f"Fetching data from {format_date(start_dt)} to {format_date(end_dt)}")
+        
+        all_data = []
+        for period_start, period_end in date_range_iterator(start_dt, end_dt, increment_days):
+            logger.info(f"Fetching period {format_date(period_start)} to {format_date(period_end)}")
+            
+            params = {
+                'time_range': {
+                    'since': format_date(period_start),
+                    'until': format_date(period_end)
+                },
+                'level': 'ad',
+                'filtering': [],
+                'breakdowns': [],
+                'fields': [
+                    'ad_id',
+                    'ad_name',
+                    'campaign_id',
+                    'campaign_name',
+                    'impressions',
+                    'clicks',
+                    'spend',
+                    'actions',
+                    'action_values'
+                ]
+            }
+            
+            try:
+                insights = self.account.get_insights(params=params)
+                period_data = [insight.export_all_data() for insight in insights]
+                all_data.extend(period_data)
+                logger.info(f"Retrieved {len(period_data)} records for period")
+            except Exception as e:
+                logger.error(f"Error fetching data for period {format_date(period_start)}: {str(e)}")
+                continue
+        
+        # Save to JSON file
+        if output_file:
+            os.makedirs(os.path.dirname(output_file), exist_ok=True)
+            with open(output_file, 'w') as f:
+                json.dump(all_data, f, indent=2)
+            logger.info(f"Data saved to {output_file}")
+        
+        return all_data
+
+    def fetch_ad_creatives(
+        self,
+        ad_ids: List[str],
+        output_file: str = 'data/output/ad_creatives.json'
+    ) -> List[Dict]:
+        """Fetch creative details for specified ads."""
+        logger.info(f"Fetching creative details for {len(ad_ids)} ads")
+        
+        fields = [
+            'id',
+            'title',
+            'body',
+            'image_url',
+            'thumbnail_url',
+            'object_story_spec',
+            'call_to_action_type'
+        ]
+        
+        creatives = []
+        for ad_id in ad_ids:
+            try:
+                ad = Ad(ad_id)
+                creative = ad.get_ad_creatives(fields=fields)
+                if creative:
+                    creatives.extend([c.export_all_data() for c in creative])
+            except Exception as e:
+                logger.error(f"Error fetching creative for ad {ad_id}: {str(e)}")
+                continue
+        
+        logger.info(f"Successfully fetched {len(creatives)} creatives")
+        
+        # Save to JSON file
+        if output_file:
+            os.makedirs(os.path.dirname(output_file), exist_ok=True)
+            with open(output_file, 'w') as f:
+                json.dump(creatives, f, indent=2)
+            logger.info(f"Creative data saved to {output_file}")
+        
+        return creatives 

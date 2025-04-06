@@ -3,11 +3,25 @@ Main ETL script orchestration.
 """
 import traceback
 from datetime import date, timedelta
+import logging
+import os
+import sys
 
-# Assuming your ETL classes are in these locations
-from etl.extractors import FacebookAdsExtractor
-from etl.transformers import FacebookAdsTransformer
-from etl.loaders import FacebookAdsLoader
+# Add the project root to the Python path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Update imports to use absolute paths
+from src.etl.extractors import FacebookAdsExtractor
+from src.etl.transformers import FacebookAdsTransformer
+from src.etl.loaders import FacebookAdsLoader
+from src.facebook_api import FacebookAPI
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 def run_etl(start_date: date | None = None, end_date: date | None = None):
     """
@@ -21,121 +35,122 @@ def run_etl(start_date: date | None = None, end_date: date | None = None):
         A dictionary indicating the status ('success' or 'error')
         and relevant messages or error details.
     """
-    print(f"Starting ETL process...")
+    logger.info("Starting ETL process...")
     if start_date and end_date:
-        print(f"Date range specified: {start_date} to {end_date}")
+        logger.info(f"Date range specified: {start_date} to {end_date}")
     else:
-        print("No date range specified, fetching default range or all data.")
+        logger.info("No date range specified, fetching default range (last 30 days).")
 
     status = {'status': 'success', 'message': '', 'error': None}
 
     try:
         # 1. Initialize components
-        print("Initializing ETL components...")
+        logger.info("Initializing ETL components...")
         extractor = FacebookAdsExtractor()
         transformer = FacebookAdsTransformer()
-        loader = FacebookAdsLoader('facebook_ads.db') # Assuming db name
-        print("Components initialized.")
+        loader = FacebookAdsLoader('facebook_ads.db')
+        api = FacebookAPI(
+            access_token=os.getenv('FACEBOOK_ACCESS_TOKEN'),
+            ad_account_id=os.getenv('FACEBOOK_AD_ACCOUNT_ID'),
+            api_version=os.getenv('FACEBOOK_API_VERSION', 'v19.0')
+        )
+        logger.info("Components initialized.")
 
         # 2. Extract and Load Pixel Data (if applicable)
-        pixel_id = None # Initialize pixel_id
+        pixel_id = None
         try:
             pixel_id = extractor.get_pixel_id_from_account()
             if pixel_id:
-                print(f"Found Facebook Pixel (ID: {pixel_id})")
+                logger.info(f"Found Facebook Pixel (ID: {pixel_id})")
                 pixel_data = extractor.extract_pixel_events(pixel_id)
                 if pixel_data:
                     loader.load_pixel_data(pixel_data)
-                    print(f"Successfully fetched and loaded pixel data for {pixel_id}.")
+                    logger.info(f"Successfully fetched and loaded pixel data for {pixel_id}.")
                 else:
-                    print(f"No event data found for pixel {pixel_id}.")
+                    logger.info(f"No event data found for pixel {pixel_id}.")
             else:
-                print("No primary Facebook Pixel found associated with the account.")
+                logger.info("No primary Facebook Pixel found associated with the account.")
         except Exception as pixel_err:
-            print(f"Warning: Could not process pixel data - {pixel_err}")
-            # Decide if this should be a warning or stop the ETL
+            logger.warning(f"Could not process pixel data - {pixel_err}")
 
         # 3. Extract and Load Custom Conversion Data (if applicable)
         try:
             conversions = extractor.list_custom_conversions()
             if conversions:
-                print(f"Found {len(conversions)} custom conversions. Fetching data for all...")
+                logger.info(f"Found {len(conversions)} custom conversions. Fetching data for all...")
                 for conv_meta in conversions:
                     try:
-                        conversion_data = extractor.extract_custom_conversion_data(conv_meta['id']) # Fetch by ID
+                        conversion_data = extractor.extract_custom_conversion_data(conv_meta['id'])
                         if conversion_data:
                             loader.load_custom_conversion(conversion_data)
-                            print(f"Successfully fetched and loaded data for conversion: {conversion_data['name']} ({conversion_data['id']})")
+                            logger.info(f"Successfully fetched and loaded data for conversion: {conversion_data['name']} ({conversion_data['id']})")
                             
                             # Check if this conversion uses a different pixel and load its data too
                             conv_pixel_id = conversion_data.get('pixel_id')
                             if conv_pixel_id and conv_pixel_id != pixel_id:
-                                print(f"Conversion {conversion_data['name']} uses pixel {conv_pixel_id}. Fetching its data...")
+                                logger.info(f"Conversion {conversion_data['name']} uses pixel {conv_pixel_id}. Fetching its data...")
                                 try:
                                     conv_pixel_data = extractor.extract_pixel_events(conv_pixel_id)
                                     if conv_pixel_data:
                                         loader.load_pixel_data(conv_pixel_data)
-                                        print(f"Successfully loaded data for conversion pixel {conv_pixel_id}.")
+                                        logger.info(f"Successfully loaded data for conversion pixel {conv_pixel_id}.")
                                     else:
-                                        print(f"No event data found for conversion pixel {conv_pixel_id}.")
+                                        logger.info(f"No event data found for conversion pixel {conv_pixel_id}.")
                                 except Exception as conv_pixel_err:
-                                    print(f"Warning: Could not process data for conversion pixel {conv_pixel_id} - {conv_pixel_err}")
+                                    logger.warning(f"Could not process data for conversion pixel {conv_pixel_id} - {conv_pixel_err}")
                     except Exception as single_conv_err:
-                        print(f"Warning: Failed to process conversion {conv_meta.get('name', conv_meta.get('id'))} - {single_conv_err}")
+                        logger.warning(f"Failed to process conversion {conv_meta.get('name', conv_meta.get('id'))} - {single_conv_err}")
             else:
-                print("No custom conversions found in the account.")
+                logger.info("No custom conversions found in the account.")
         except Exception as conv_err:
-            print(f"Warning: Could not process custom conversions - {conv_err}")
-            # Decide if this should be a warning or stop the ETL
+            logger.warning(f"Could not process custom conversions - {conv_err}")
 
-        # 4. Extract Ads and Performance Data (using date range)
-        print("Starting ads and performance data extraction...")
-        # *** This extractor call needs modification to use dates ***
-        ads_data, performance_data, extract_status = extractor.extract_ads_async(start_date=start_date, end_date=end_date)
+        # 4. Extract Ads and Performance Data using original method
+        logger.info("Starting ads and performance data extraction...")
+        try:
+            # Use the original method to fetch offsite conversions
+            ads_data, performance_data, extraction_status = extractor.extract_ads_async(
+                start_date=start_date,
+                end_date=end_date
+            )
+            
+            if not ads_data:
+                logger.warning("No conversion data extracted for the specified period.")
+                status['message'] = "No conversion data found to process for the period."
+            else:
+                logger.info(f"Extracted {len(ads_data)} ad records.")
+                
+                # Transform and load the data
+                logger.info("Starting data transformation...")
+                transformed_data = transformer.transform_ads_batch(ads_data)
+                logger.info(f"Transformed {len(transformed_data)} records.")
+                
+                logger.info("Starting data loading...")
+                loader.load_ads_data(transformed_data, performance_data)
+                logger.info(f"Loaded {len(transformed_data)} records.")
+                
+                # Save to offsite_conversions.json
+                if performance_data:
+                    import json
+                    os.makedirs('output', exist_ok=True)
+                    with open('output/offsite_conversions.json', 'w') as f:
+                        json.dump(performance_data, f, indent=2)
+                    logger.info("Data saved to output/offsite_conversions.json")
+                
+                # Update final status message
+                status['message'] = f"Successfully processed {len(transformed_data)} records."
+                logger.info("ETL process completed successfully.")
 
-        print(f"Extraction status: {extract_status.get('status', 'Unknown')}")
-        if extract_status.get('status') == 'ERROR':
-            error_details = extract_status.get('response', 'Unknown error')
-            if extract_status.get('errors'):
-                 error_details += " Details: " + "; ".join(extract_status['errors'])
-            raise Exception(f"Extraction failed: {error_details}")
-
-        if not ads_data and not performance_data:
-            print("No ads or performance data extracted for the specified period.")
-            status['message'] = "No ads or performance data found to process for the period."
-            # Depending on requirements, you might want to return success here
-            # return status 
-        else:
-             print(f"Extracted {len(ads_data)} ads and {len(performance_data)} performance records.")
-
-        # 5. Transform Ads Data
-        transformed_ads = []
-        if ads_data:
-            print("Starting ads data transformation...")
-            transformed_ads = transformer.transform_ads_batch(ads_data)
-            print(f"Transformed {len(transformed_ads)} ads.")
-        else:
-             print("No ads data to transform.")
-
-        # 6. Load Transformed Ads and Performance Data
-        print("Starting data loading...")
-        if transformed_ads:
-            loader.load_ads(transformed_ads)
-            print(f"Loaded {len(transformed_ads)} ads.")
-        if performance_data:
-            loader.load_performance_metrics(performance_data)
-            print(f"Loaded {len(performance_data)} performance records.")
-        print("Data loading complete.")
-
-        # Update final status message
-        processed_ads_count = len(transformed_ads) if transformed_ads else 0
-        processed_perf_count = len(performance_data) if performance_data else 0
-        status['message'] = f"Successfully processed {processed_ads_count} ads and {processed_perf_count} performance records."
-        print("ETL process completed successfully.")
+        except Exception as e:
+            logger.error(f"Error during data extraction: {str(e)}")
+            status['status'] = 'error'
+            status['message'] = f"Data extraction failed: {str(e)}"
+            status['error'] = traceback.format_exc()
+            return status
 
     except Exception as e:
-        print(f"ETL Error: {str(e)}")
-        print(f"Traceback:\n{traceback.format_exc()}")
+        logger.error(f"ETL Error: {str(e)}")
+        logger.error(f"Traceback:\n{traceback.format_exc()}")
         status['status'] = 'error'
         status['message'] = f"ETL process failed: {str(e)}"
         status['error'] = traceback.format_exc()
@@ -144,9 +159,9 @@ def run_etl(start_date: date | None = None, end_date: date | None = None):
 
 # Example of how to run it (optional, for testing)
 if __name__ == "__main__":
-    print("Running ETL directly for testing...")
+    logger.info("Running ETL directly for testing...")
     # Example: Run for the last 7 days
     today = date.today()
     seven_days_ago = today - timedelta(days=7)
     result = run_etl(start_date=seven_days_ago, end_date=today)
-    print(f"ETL Run Result:\n{result}") 
+    logger.info(f"ETL Run Result:\n{result}") 

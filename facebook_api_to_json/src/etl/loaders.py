@@ -580,10 +580,10 @@ class FacebookAdsLoader:
                         ad['name'],
                         ad['campaign_id'],
                         ad['adset_id'],
-                        ad['status'],
-                        ad['created_time'],
-                        ad['updated_time'],
-                        ad['effective_status'],
+                        ad.get('status', 'UNKNOWN'),
+                        ad.get('created_time', datetime.now().isoformat()),
+                        ad.get('updated_time', datetime.now().isoformat()),
+                        ad.get('effective_status', 'UNKNOWN'),
                         creative_data,
                         ad.get('pixel_id')
                     ))
@@ -613,34 +613,35 @@ class FacebookAdsLoader:
                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         metric['ad_id'],
-                        metric['timestamp'],
-                        metric['impressions'],
-                        metric['clicks'],
-                        metric['spend'],
-                        metric['reach'],
-                        metric['frequency'],
-                        metric['ctr'],
-                        metric['cpc'],
-                        metric['cpm'],
-                        metric['conversions'],
-                        metric['conversion_value']
+                        metric.get('date_start', datetime.now().strftime('%Y-%m-%d')),
+                        int(metric.get('impressions', 0)),
+                        int(metric.get('clicks', 0)),
+                        float(metric.get('spend', 0)),
+                        int(metric.get('reach', 0)),
+                        float(metric.get('frequency', 0)),
+                        float(metric.get('ctr', 0)),
+                        float(metric.get('cpc', 0)),
+                        float(metric.get('cpm', 0)),
+                        len(metric.get('actions', [])),
+                        sum(float(action.get('value', 0)) for action in metric.get('action_values', []))
                     ))
                     
                     # Insert detailed conversion data
-                    if 'conversion_data' in metric:
-                        for conv in metric['conversion_data']:
-                            cursor.execute("""
-                                INSERT OR REPLACE INTO conversion_metrics (
-                                    ad_id, timestamp, event_name,
-                                    value, action_type
-                                ) VALUES (?, ?, ?, ?, ?)
-                            """, (
-                                metric['ad_id'],
-                                metric['timestamp'],
-                                conv.get('event_name'),
-                                conv.get('value', 0),
-                                conv.get('action_type')
-                            ))
+                    if 'actions' in metric:
+                        for action in metric['actions']:
+                            if action.get('action_type') == 'offsite_conversion.fb_pixel_custom':
+                                cursor.execute("""
+                                    INSERT OR REPLACE INTO conversion_metrics (
+                                        ad_id, timestamp, event_name,
+                                        value, action_type
+                                    ) VALUES (?, ?, ?, ?, ?)
+                                """, (
+                                    metric['ad_id'],
+                                    metric.get('date_start', datetime.now().strftime('%Y-%m-%d')),
+                                    action.get('action_type'),
+                                    float(action.get('value', 0)),
+                                    action.get('action_type')
+                                ))
                 
                 conn.commit()
                 print(f"Successfully loaded {len(ads_data)} ads and {len(performance_data)} performance records")
