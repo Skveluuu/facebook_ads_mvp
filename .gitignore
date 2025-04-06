@@ -64,3 +64,8 @@ docs/_build/
 *.bak
 *.tmp
 *~
+
+# Database and output files
+*.db
+output/
+data/output/

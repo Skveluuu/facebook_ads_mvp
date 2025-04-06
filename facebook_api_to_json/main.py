@@ -2,13 +2,14 @@ import json
 import logging
 import os
 from datetime import datetime, timedelta
-from typing import List, Dict
+from typing import List, Dict, Optional, Tuple
 from facebook_business.api import FacebookAdsApi
 from facebook_business.adobjects.adaccount import AdAccount
 from facebook_business.adobjects.ad import Ad
 from facebook_business.adobjects.adcreative import AdCreative
 from facebook_business.adobjects.adsinsights import AdsInsights
 from dotenv import load_dotenv
+from src.utils.date_utils import get_date_range, date_range_iterator, format_date, store_last_successful_run
 
 # Load environment variables and configure logging
 load_dotenv()
@@ -74,7 +75,11 @@ def fetch_ad_creatives(ad_ids: List[str]) -> List[Dict]:
         logging.error(f"Error in fetch_ad_creatives: {str(e)}")
         raise
 
-def fetch_offsite_conversions():
+def fetch_offsite_conversions(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    days_back: int = 7  # Changed default to 7 days for testing
+) -> Tuple[List[Dict], List[Dict]]:
     """Fetch offsite conversion data from Facebook Ads API."""
     try:
         init_facebook_api()
@@ -100,72 +105,93 @@ def fetch_offsite_conversions():
             AdsInsights.Field.action_values
         ]
         
-        # Set date range for last 30 days
-        end_date = datetime.now().date()
-        start_date = end_date - timedelta(days=30)
+        # Get date range using utility function
+        start_dt, end_dt = get_date_range(start_date, end_date, days_back)
+        logging.info(f"Full date range: {format_date(start_dt)} to {format_date(end_dt)}")
         
-        params = {
-            'time_range': {
-                'since': start_date.strftime('%Y-%m-%d'),
-                'until': end_date.strftime('%Y-%m-%d')
-            },
-            'level': 'ad',
-            'limit': 100,
-            'action_attribution_windows': ['1d_click'],
-            'action_report_time': 'conversion',
-            'filtering': [{
-                'field': 'action_type',
-                'operator': 'IN',
-                'value': ['offsite_conversion.fb_pixel_custom']
-            }]
-        }
+        all_data = []
+        all_ad_ids = set()  # Use set to avoid duplicates
         
-        logging.info(f"Fetching data from {start_date} to {end_date}")
-        insights = ad_account.get_insights(fields=fields, params=params)
-        
-        # Process insights data
-        data = []
-        ad_ids = []  # Collect ad IDs for creative fetching
-        for insight in insights:
-            insight_data = insight.export_all_data()
+        # Fetch data day by day
+        for period_start, period_end in date_range_iterator(start_dt, end_dt):
+            logging.info(f"Fetching period {format_date(period_start)} to {format_date(period_end)}")
             
-            # Filter actions and action_values to keep only offsite_conversion.fb_pixel_custom with 1d_click
-            for metric in ['actions', 'action_values']:
-                if metric in insight_data:
-                    filtered_items = [{
-                        'action_type': item['action_type'],
-                        '1d_click': item['1d_click']
-                    } for item in insight_data[metric]
-                        if item.get('action_type') == 'offsite_conversion.fb_pixel_custom'
-                        and '1d_click' in item]
+            params = {
+                'time_range': {
+                    'since': format_date(period_start),
+                    'until': format_date(period_end)
+                },
+                'level': 'ad',
+                'limit': 100,
+                'action_attribution_windows': ['1d_click'],
+                'action_report_time': 'conversion',
+                'filtering': [{
+                    'field': 'action_type',
+                    'operator': 'IN',
+                    'value': ['offsite_conversion.fb_pixel_custom']
+                }]
+            }
+            
+            try:
+                insights = ad_account.get_insights(fields=fields, params=params)
+                period_data = []
+                
+                for insight in insights:
+                    insight_data = insight.export_all_data()
                     
-                    if filtered_items:
-                        insight_data[metric] = filtered_items
-                    else:
-                        insight_data.pop(metric, None)
-            
-            if 'actions' in insight_data:
-                data.append(insight_data)
-                ad_ids.append(insight_data['ad_id'])
+                    # Filter actions and action_values
+                    for metric in ['actions', 'action_values']:
+                        if metric in insight_data:
+                            filtered_items = [{
+                                'action_type': item['action_type'],
+                                '1d_click': item['1d_click']
+                            } for item in insight_data[metric]
+                                if item.get('action_type') == 'offsite_conversion.fb_pixel_custom'
+                                and '1d_click' in item]
+                            
+                            if filtered_items:
+                                insight_data[metric] = filtered_items
+                            else:
+                                insight_data.pop(metric, None)
+                    
+                    if 'actions' in insight_data:
+                        period_data.append(insight_data)
+                        all_ad_ids.add(insight_data['ad_id'])
+                
+                all_data.extend(period_data)
+                logging.info(f"Retrieved {len(period_data)} records for period")
+                
+                # Store successful run date
+                store_last_successful_run(format_date(period_end))
+                
+            except Exception as e:
+                logging.error(f"Error fetching data for period {format_date(period_start)}: {str(e)}")
+                continue
 
-        logging.info(f"Retrieved {len(data)} records")
+        logging.info(f"Total records retrieved: {len(all_data)}")
 
         # Save to JSON file
         output_dir = "data/output"
         os.makedirs(output_dir, exist_ok=True)
         output_file = os.path.join(output_dir, "offsite_conversions.json")
         with open(output_file, 'w') as f:
-            json.dump(data, f, indent=2)
+            json.dump(all_data, f, indent=2)
         logging.info(f"Data saved to {output_file}")
         
         # Fetch and save ad creatives
-        creatives = fetch_ad_creatives(ad_ids)
+        creatives = fetch_ad_creatives(list(all_ad_ids))
         
-        return data, creatives
+        return all_data, creatives
 
     except Exception as e:
         logging.error(f"Error fetching offsite conversions: {str(e)}")
         raise
 
 if __name__ == "__main__":
-    fetch_offsite_conversions()
+    # Test with a 3-day range
+    end = datetime.now().date()
+    start = end - timedelta(days=3)
+    fetch_offsite_conversions(
+        start_date=start.strftime('%Y-%m-%d'),
+        end_date=end.strftime('%Y-%m-%d')
+    )
