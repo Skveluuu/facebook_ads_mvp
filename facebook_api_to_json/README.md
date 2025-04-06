@@ -1,30 +1,56 @@
 # Facebook API to JSON
 
-A Python script that fetches data from Facebook's Marketing API and saves it to JSON files. Currently supports:
-- Offsite conversion data with attribution windows
-- Ad creative details including images and CTAs
+A comprehensive Python toolkit for interacting with Facebook's Marketing API. Features include:
+- Fetching and storing offsite conversion data
+- Retrieving ad creative details
+- ETL pipeline for data processing
+- Streamlit dashboard for data visualization
+- SQLite database integration
 
 ## Features
 
-- Fetches offsite conversion data from Facebook Ads API
-- Retrieves detailed ad creative information including images and CTAs
-- Filters data for specific attribution windows (1d_click)
-- Saves data in structured JSON format
-- Comprehensive error handling and logging
+- **Data Fetching**
+  - Offsite conversion data with attribution windows
+  - Ad creative information (images, CTAs, etc.)
+  - Campaign and ad set metrics
+  
+- **Data Processing**
+  - ETL pipeline for data transformation
+  - SQLite database for structured storage
+  - Configurable data filters and aggregations
 
-## Prerequisites
+- **Visualization**
+  - Streamlit dashboard for data exploration
+  - Interactive charts and metrics
+  - Custom date range selection
 
-- Python 3.7+
-- Facebook Business Account
-- Facebook App with necessary permissions
-- Ad Account access
+## Project Structure
+
+```
+├── src/                    # Source code
+│   ├── config/            # Configuration files
+│   ├── etl/               # ETL processing scripts
+│   ├── examples/          # Example usage scripts
+│   ├── facebook_api.py    # Facebook API interface
+│   ├── fb_client.py       # Facebook client implementation
+│   ├── main_etl.py        # Main ETL pipeline
+│   ├── streamlit_app.py   # Streamlit dashboard
+│   ├── database.py        # Database operations
+│   └── config.py          # Configuration management
+├── .env.example           # Example environment variables
+├── .gitignore             # Git ignore rules
+├── LICENSE                # MIT License
+├── README.md             # This file
+├── pyproject.toml        # Project metadata
+└── requirements.txt      # Python dependencies
+```
 
 ## Installation
 
 1. Clone the repository:
 ```bash
 git clone <repository-url>
-cd <repository-name>
+cd facebook_api_to_json
 ```
 
 2. Install dependencies:
@@ -32,7 +58,34 @@ cd <repository-name>
 pip install -r requirements.txt
 ```
 
-3. Create a `.env` file in the project root with your Facebook API credentials:
+3. Set up environment variables:
+   - Copy `.env.example` to `.env`
+   - Fill in your Facebook API credentials
+
+## Usage
+
+### Data Fetching
+```python
+from src.facebook_api import FacebookAPI
+
+api = FacebookAPI()
+conversions = api.fetch_offsite_conversions()
+creatives = api.fetch_ad_creatives()
+```
+
+### Running ETL Pipeline
+```bash
+python src/main_etl.py
+```
+
+### Starting Dashboard
+```bash
+streamlit run src/streamlit_app.py
+```
+
+## Configuration
+
+Key configuration options in `.env`:
 ```
 FACEBOOK_APP_ID=your_app_id
 FACEBOOK_APP_SECRET=your_app_secret
@@ -42,71 +95,14 @@ FACEBOOK_API_VERSION=v19.0
 LOG_LEVEL=INFO
 ```
 
-## Usage
-
-Run the script:
-```bash
-python main.py
-```
-
-The script will:
-1. Fetch offsite conversion data for the last 30 days
-2. Retrieve creative details for all ads
-3. Save data to JSON files in the `data/output` directory:
-   - `offsite_conversions.json`: Contains conversion metrics and ad performance data
-   - `ad_creatives.json`: Contains creative details including images and CTAs
-
-## Output Structure
-
-### Offsite Conversions Data
-```json
-{
-  "ad_id": "...",
-  "ad_name": "...",
-  "campaign_id": "...",
-  "campaign_name": "...",
-  "impressions": "...",
-  "clicks": "...",
-  "spend": "...",
-  "actions": [...],
-  "action_values": [...]
-}
-```
-
-### Ad Creatives Data
-```json
-{
-  "id": "...",
-  "title": "...",
-  "body": "...",
-  "image_url": "...",
-  "thumbnail_url": "...",
-  "object_story_spec": {...},
-  "call_to_action_type": "..."
-}
-```
-
-## Directory Structure
-
-```
-├── main.py              # Main script
-├── requirements.txt     # Python dependencies
-├── .env                # Environment variables (not in repo)
-├── .gitignore         # Git ignore rules
-├── README.md          # This file
-└── data/
-    └── output/        # JSON output files
-```
-
 ## Error Handling
 
-The script includes comprehensive error handling for:
+The toolkit includes comprehensive error handling for:
 - API authentication failures
 - Network issues
-- Missing or invalid data
+- Data validation
 - Rate limiting
-
-All errors are logged with appropriate detail level.
+- Database operations
 
 ## Contributing
 
