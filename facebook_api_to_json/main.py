@@ -2,14 +2,14 @@ import json
 import logging
 import os
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict
 from facebook_business.api import FacebookAdsApi
 from facebook_business.adobjects.adaccount import AdAccount
 from facebook_business.adobjects.ad import Ad
 from facebook_business.adobjects.adcreative import AdCreative
 from facebook_business.adobjects.adsinsights import AdsInsights
 from dotenv import load_dotenv
-from src.utils.date_utils import get_date_range, date_range_iterator, format_date, store_last_successful_run
+from src.utils.date_utils import get_date_range, date_range_iterator, format_date
 
 # Load environment variables and configure logging
 load_dotenv()
@@ -18,77 +18,168 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
+# Constants
+OUTPUT_DIR = os.path.join('facebook_api_to_json', 'data', 'output')
+
 def init_facebook_api():
-    """Initialize the Facebook API with credentials from environment variables."""
-    app_id = os.getenv('FACEBOOK_APP_ID')
-    app_secret = os.getenv('FACEBOOK_APP_SECRET')
-    access_token = os.getenv('FACEBOOK_ACCESS_TOKEN')
-    api_version = os.getenv('FACEBOOK_API_VERSION', 'v19.0')
-    
-    logging.info(f"Initializing Facebook API with version {api_version}")
-    FacebookAdsApi.init(app_id, app_secret, access_token, api_version=api_version)
-
-def fetch_ad_creatives(ad_ids: List[str]) -> List[Dict]:
-    """Fetch creative details including images for multiple ads."""
+    """Initialize Facebook Ads API with credentials from environment variables."""
     try:
-        creatives = []
-        fields = [
-            'id',
-            'title',
-            'body',
-            'image_url',
-            'thumbnail_url',
-            'object_story_spec',
-            'call_to_action_type',
-            'link_url'
-        ]
+        access_token = os.getenv('FACEBOOK_ACCESS_TOKEN')
+        app_id = os.getenv('FACEBOOK_APP_ID')
+        app_secret = os.getenv('FACEBOOK_APP_SECRET')
+        account_id = os.getenv('FACEBOOK_AD_ACCOUNT_ID')
 
-        logging.info(f"Fetching creative details for {len(ad_ids)} ads")
+        if not all([access_token, app_id, app_secret, account_id]):
+            raise ValueError("Missing required Facebook API credentials")
+
+        # Remove 'act_' prefix if it exists, as it will be added by the API
+        account_id = account_id.replace('act_', '')
+
+        FacebookAdsApi.init(app_id, app_secret, access_token)
+        return account_id
+
+    except Exception as e:
+        logging.error(f"Error initializing Facebook API: {e}")
+        raise
+
+def format_date(date):
+    """Format datetime object to YYYY-MM-DD string."""
+    return date.strftime('%Y-%m-%d')
+
+def get_correct_conversion_count(insight_data):
+    """
+    Get the correct conversion count from actions and action_values arrays.
+    Returns the smaller value if it's approximately 1/35th of the larger value.
+    """
+    actions = insight_data.get('actions', [])
+    action_values = insight_data.get('action_values', [])
+    
+    conversion_count = None
+    conversion_value = None
+    
+    for action in actions:
+        if action.get('action_type') == 'offsite_conversion.fb_pixel_custom':
+            try:
+                conversion_count = int(float(action.get('1d_click', 0)))
+            except (ValueError, TypeError):
+                continue
+    
+    for value in action_values:
+        if value.get('action_type') == 'offsite_conversion.fb_pixel_custom':
+            try:
+                conversion_value = int(float(value.get('1d_click', 0)))
+            except (ValueError, TypeError):
+                continue
+    
+    # If either value is None, we can't proceed
+    if conversion_count is None or conversion_value is None:
+        return None
+    
+    # If both values are 0, return 0
+    if conversion_count == 0 and conversion_value == 0:
+        return 0
         
+    # If one value is 0 but not the other, something is wrong
+    if conversion_count == 0 or conversion_value == 0:
+        return None
+    
+    # The smaller value should be approximately 1/35th of the larger value
+    smaller = min(conversion_count, conversion_value)
+    larger = max(conversion_count, conversion_value)
+    
+    # Check if the relationship is approximately 1:35
+    if abs(larger / smaller - 35) < 1:  # Allow for small rounding differences
+        return smaller
+    
+    return None
+
+def fetch_ad_creatives(ad_ids):
+    """Fetch creative details for the given ad IDs."""
+    try:
+        if not ad_ids:
+            return []
+        
+        account_id = os.getenv('FACEBOOK_AD_ACCOUNT_ID')
+        if not account_id:
+            raise ValueError("FACEBOOK_AD_ACCOUNT_ID not found in environment variables")
+        
+        account_id = f'act_{account_id}'
+        ad_account = AdAccount(account_id)
+        
+        # Get creative details for each ad
+        creatives = []
         for ad_id in ad_ids:
             try:
+                # Create Ad object and get its creative
                 ad = Ad(ad_id)
-                creative_id = ad.get_ad_creatives(fields=['id'])[0]['id']
-                creative = AdCreative(creative_id)
-                creative_data = creative.api_get(fields=fields)
+                ad_creatives = ad.get_ad_creatives(fields=[
+                    AdCreative.Field.id,
+                    AdCreative.Field.name,
+                    AdCreative.Field.title,
+                    AdCreative.Field.body,
+                    AdCreative.Field.image_url,
+                    AdCreative.Field.video_id,
+                    AdCreative.Field.object_story_spec,
+                    AdCreative.Field.url_tags
+                ])
                 
-                creatives.append(creative_data.export_all_data())
-                logging.debug(f"Fetched creative for ad {ad_id}")
-                
+                if ad_creatives:
+                    creatives.append(ad_creatives[0].export_all_data())
             except Exception as e:
                 logging.error(f"Error fetching creative for ad {ad_id}: {str(e)}")
                 continue
         
-        logging.info(f"Successfully fetched {len(creatives)} creatives")
-        
-        # Save creatives to JSON file
-        output_dir = "data/output"
-        os.makedirs(output_dir, exist_ok=True)
-        output_file = os.path.join(output_dir, "ad_creatives.json")
-        with open(output_file, 'w') as f:
+        # Save creatives to file
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
+        creatives_file = os.path.join(OUTPUT_DIR, 'ad_creatives.json')
+        with open(creatives_file, 'w') as f:
             json.dump(creatives, f, indent=2)
-        logging.info(f"Creative data saved to {output_file}")
         
+        logging.info(f"Fetched creative details for {len(creatives)} ads")
         return creatives
-        
+    
     except Exception as e:
-        logging.error(f"Error in fetch_ad_creatives: {str(e)}")
-        raise
+        logging.error(f"Error fetching ad creatives: {str(e)}")
+        return []
 
-def fetch_offsite_conversions(
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    days_back: int = 7  # Changed default to 7 days for testing
-) -> Tuple[List[Dict], List[Dict]]:
+def process_insights_data(insights_data):
+    processed_data = []
+    for insight_data in insights_data:
+        logging.info(f"Processing insight for ad: {insight_data.get('ad_name')}")
+        
+        if 'actions' in insight_data:
+            logging.info("Raw actions:")
+            for action in insight_data['actions']:
+                logging.info(f"  {json.dumps(action)}")
+                
+        if 'action_values' in insight_data:
+            logging.info("Raw action_values:")
+            for value in insight_data['action_values']:
+                logging.info(f"  {json.dumps(value)}")
+
+        # Get correct conversion count
+        correct_count = get_correct_conversion_count(insight_data)
+        if correct_count is not None:
+            filtered_items = [{
+                'action_type': 'offsite_conversion.fb_pixel_custom',
+                '1d_click': str(correct_count)
+            }]
+            insight_data['actions'] = filtered_items
+            insight_data.pop('action_values', None)  # Remove redundant data
+        else:
+            # If no valid conversion count found, remove both arrays
+            insight_data.pop('actions', None)
+            insight_data.pop('action_values', None)
+            
+        processed_data.append(insight_data)
+    
+    return processed_data
+
+def fetch_offsite_conversions():
     """Fetch offsite conversion data from Facebook Ads API."""
     try:
-        init_facebook_api()
-        account_id = os.getenv('FACEBOOK_AD_ACCOUNT_ID')
-        if not account_id:
-            raise ValueError("FACEBOOK_AD_ACCOUNT_ID not found in environment variables")
-            
-        logging.info(f"Fetching data for account ID: {account_id}")
-        ad_account = AdAccount(account_id)
+        account_id = init_facebook_api()
+        ad_account = AdAccount(f'act_{account_id}')
         
         # Define fields to retrieve
         fields = [
@@ -105,20 +196,22 @@ def fetch_offsite_conversions(
             AdsInsights.Field.action_values
         ]
         
-        # Get date range using utility function
-        start_dt, end_dt = get_date_range(start_date, end_date, days_back)
-        logging.info(f"Full date range: {format_date(start_dt)} to {format_date(end_dt)}")
+        # Set date range
+        end_date = datetime(2025, 4, 6)
+        start_date = end_date - timedelta(days=30)
         
         all_data = []
-        all_ad_ids = set()  # Use set to avoid duplicates
+        all_ad_ids = set()
+        current_date = start_date
         
-        # Fetch data day by day
-        for period_start, period_end in date_range_iterator(start_dt, end_dt):
-            logging.info(f"Fetching period {format_date(period_start)} to {format_date(period_end)}")
+        while current_date < end_date:
+            period_end = current_date + timedelta(days=1)
+            
+            logging.info(f"Fetching data for {format_date(current_date)}")
             
             params = {
                 'time_range': {
-                    'since': format_date(period_start),
+                    'since': format_date(current_date),
                     'until': format_date(period_end)
                 },
                 'level': 'ad',
@@ -132,66 +225,56 @@ def fetch_offsite_conversions(
                 }]
             }
             
-            try:
-                insights = ad_account.get_insights(fields=fields, params=params)
-                period_data = []
+            insights = ad_account.get_insights(fields=fields, params=params)
+            insights_list = list(insights)
+            
+            if insights_list:
+                logging.info(f"Raw insights count: {len(insights_list)}")
+                processed_data = []
                 
-                for insight in insights:
+                for insight in insights_list:
                     insight_data = insight.export_all_data()
+                    insight_data['date_start'] = format_date(current_date)
+                    insight_data['date_stop'] = format_date(period_end)
                     
-                    # Filter actions and action_values
-                    for metric in ['actions', 'action_values']:
-                        if metric in insight_data:
-                            filtered_items = [{
-                                'action_type': item['action_type'],
-                                '1d_click': item['1d_click']
-                            } for item in insight_data[metric]
-                                if item.get('action_type') == 'offsite_conversion.fb_pixel_custom'
-                                and '1d_click' in item]
-                            
-                            if filtered_items:
-                                insight_data[metric] = filtered_items
-                            else:
-                                insight_data.pop(metric, None)
-                    
-                    if 'actions' in insight_data:
-                        period_data.append(insight_data)
+                    # Get correct conversion count
+                    correct_count = get_correct_conversion_count(insight_data)
+                    if correct_count is not None:
+                        filtered_items = [{
+                            'action_type': 'offsite_conversion.fb_pixel_custom',
+                            '1d_click': str(correct_count)
+                        }]
+                        insight_data['actions'] = filtered_items
+                        insight_data.pop('action_values', None)  # Remove redundant data
+                        processed_data.append(insight_data)
                         all_ad_ids.add(insight_data['ad_id'])
                 
-                all_data.extend(period_data)
-                logging.info(f"Retrieved {len(period_data)} records for period")
-                
-                # Store successful run date
-                store_last_successful_run(format_date(period_end))
-                
-            except Exception as e:
-                logging.error(f"Error fetching data for period {format_date(period_start)}: {str(e)}")
-                continue
-
+                all_data.extend(processed_data)
+                logging.info(f"Retrieved {len(processed_data)} records for {format_date(current_date)}")
+            
+            current_date = period_end
+        
         logging.info(f"Total records retrieved: {len(all_data)}")
-
-        # Save to JSON file
-        output_dir = "data/output"
-        os.makedirs(output_dir, exist_ok=True)
-        output_file = os.path.join(output_dir, "offsite_conversions.json")
-        with open(output_file, 'w') as f:
+        
+        # Log a sample record
+        if all_data:
+            logging.info("Sample record before saving: " + json.dumps(all_data[0], indent=2))
+        
+        # Save insights data
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
+        insights_file = os.path.join(OUTPUT_DIR, 'offsite_conversions.json')
+        with open(insights_file, 'w') as f:
             json.dump(all_data, f, indent=2)
-        logging.info(f"Data saved to {output_file}")
+        logging.info(f"Data saved to {insights_file}")
         
         # Fetch and save ad creatives
         creatives = fetch_ad_creatives(list(all_ad_ids))
         
         return all_data, creatives
-
+    
     except Exception as e:
         logging.error(f"Error fetching offsite conversions: {str(e)}")
         raise
 
 if __name__ == "__main__":
-    # Test with a 3-day range
-    end = datetime.now().date()
-    start = end - timedelta(days=3)
-    fetch_offsite_conversions(
-        start_date=start.strftime('%Y-%m-%d'),
-        end_date=end.strftime('%Y-%m-%d')
-    )
+    fetch_offsite_conversions()
