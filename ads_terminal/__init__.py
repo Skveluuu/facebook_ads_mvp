@@ -1,0 +1,1 @@
+# Initialize ads_terminal package

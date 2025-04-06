@@ -1,0 +1,5 @@
+click>=8.0.0
+facebook-business>=17.0.0
+python-dotenv>=0.19.0
+rich>=10.0.0
+tabulate>=0.8.9
