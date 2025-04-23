@@ -9,7 +9,7 @@ from facebook_business.adobjects.ad import Ad
 from facebook_business.adobjects.adcreative import AdCreative
 from facebook_business.adobjects.adsinsights import AdsInsights
 from dotenv import load_dotenv
-from src.utils.date_utils import get_date_range, date_range_iterator, format_date
+from facebook_api_to_json.src.utils.date_utils import get_date_range, date_range_iterator, format_date
 
 # Load environment variables and configure logging
 load_dotenv()

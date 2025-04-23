@@ -1,0 +1,37 @@
+Project: Facebook Data GUI Builder
+
+Problem Statement:
+Marketing analysts need a simple way to select which Facebook Ads Insights metrics they want, query the API, and export the data to JSON without writing code.
+
+Goals / In‑Scope:
+1. Provide a lightweight GUI allowing users to:
+   • Authenticate with Meta (input access token, app id, secret, ad account id).
+   • Select date range and attribution window.
+   • Pick insight fields via checkboxes/search.
+   • Optional breakdown selections (age, gender, placement…).
+   • Trigger data fetch and display results in a table.
+   • Export results to downloadable JSON file.
+2. Use latest facebook‑business‑sdk.
+3. Build GUI with Streamlit (fast, deployable, python‑native).
+4. Package as pip‑installable app with `requirements.txt`.
+
+Out‑of‑Scope:
+• Persisting state in a database.
+• Multi‑user auth flow (we'll rely on manual token input for v1).
+• Scheduling / cron jobs (future).
+
+Success Metrics:
+• User can fetch data and download JSON in < 3 min without code.
+• Handles at least 100K insight rows without crash.
+
+Assumptions & Constraints:
+• User already has valid access token.
+• Single ad account per session.
+
+Milestones:
+1. Project scaffold & dependencies.
+2. Build basic Streamlit form to input creds & date range.
+3. Surface list of Insight fields (dynamic from SDK Enum).
+4. Query API and render table.
+5. JSON export button.
+6. Polish UI, logging, error states. 
